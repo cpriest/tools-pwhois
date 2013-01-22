@@ -81,24 +81,28 @@
 		
 		/** @var int	If true, will dump the raw results from whois to stdout */
 		protected $DumpRawResults = false;
-		
-		/** @var int	Default number of days to cache responses */
-		protected $CacheDays = 14;
-		
-		/** @var int	Number of days before a cached file will be removed, defaults to $CacheDays * 10 if not specified at command line, ignored if 0 */
-		protected $CacheCleanupDays = 0;
-		
-		/** @var string	Directory to cache responses in */
-		protected $CacheDir = NULL;
-		
+
+		/** @var bool   If true, will dump the downloaded/cached results of the ISO-3166 Country Codes document */
+		protected $DumpCountryCodes = false;
+
 		/** @var string Contains the raw results of the query */
 		protected $RawResults = '';
 		
 		/** @var bool 	Set to true if the results have been read from cache (prevents re-writing to cache) */
 		protected $ResultsReadFromCache = false;
-		
+
+		/** @var int    Defines the verbosity level used when displaying debug information */
 		public static $VerbosityLevel = 0;
-		
+
+		/** @var int	Default number of days to cache responses */
+		public static $CacheDays = 14;
+
+		/** @var int	Number of days before a cached file will be removed, defaults to $CacheDays * 10 if not specified at command line, ignored if 0 */
+		public static $CacheCleanupDays = 0;
+
+		/** @var string	Directory to cache responses in */
+		public static $CacheDir = NULL;
+
 		/**
 		* Parses and validates input parameters, then executes
 		*/
@@ -112,9 +116,10 @@
 			for($j=0;$j<count($argv);$j++) {
 				$arg = $argv[$j];
 				$param = $argv[$j+1];
-				
+
 				switch($arg) {
 					case '-h':
+						$this->ExitHelp();
 						break;
 						
 					case '-c':
@@ -126,17 +131,17 @@
 						$j++;
 						if(!is_numeric($param))
 							$this->ExitError("Invalid -cd parameter: {$param}, not numeric.");
-						$this->CacheDays = (int)$param;
+						self::$CacheDays = (int)$param;
 
 						if(!in_array('-cc', $argv))
-							$this->CacheCleanupDays = $this->CacheDays * 10;
+							self::$CacheCleanupDays = self::$CacheDays * 10;
 						break;
 
 					case '-cc':
 						$j++;
 						if(!is_numeric($param))
 							$this->ExitError("Invalid -cc parameter: {$param}, not numeric.");
-						$this->CacheCleanupDays = (int)$param;
+						self::$CacheCleanupDays = (int)$param;
 						break;
 						
 					case '-o':
@@ -147,7 +152,8 @@
 					case '-d':		/* Checked for at very beginning */ 			break;
 					case '-dR':		$this->DumpRawResultsObject = true;				break;
 					case '-dr':		$this->DumpRawResults = true;					break;
-						
+					case '-dcc':    $this->DumpCountryCodes = true;                 break;
+
 					case '-v':
 					case '-vv':
 					case '-vvv':
@@ -173,14 +179,14 @@
 		 * @param $Directory
 		 */
 		protected function SetCacheDir($Directory) {
-			$this->CacheDir = $Directory;
-			if(is_dir($this->CacheDir)) {
-				if(!is_writable($this->CacheDir))
-					$this->ExitError("Cannot write to {$this->CacheDir}/.test_file, check permissions.");
+			if(is_dir($Directory)) {
+				if(!is_writable($Directory))
+					$this->ExitError("Cannot write to {$Directory}/.test_file, check permissions.");
 			} else {
-				if(!@mkdir($this->CacheDir, 0775, true))
-					$this->ExitError("Cannot create cache directory \"{$this->CacheDir}\", check permissions.");
+				if(!@mkdir($Directory, 0775, true))
+					$this->ExitError("Cannot create cache directory \"{$Directory}\", check permissions.");
 			}
+			self::$CacheDir = $Directory;
 		}
 				
 		/**
@@ -250,7 +256,11 @@ Usage: pwhois [opts] query
         -d          Sets php directive display_errors to on
         -dR         Dumps the raw phpWhois result object for each query to stdout
         -dr         Dumps the raw whois response for each query to stdout
-        
+        -dcc        Display Country Codes from ISO-3166
+
+        * 2 Letter Country Code conversions will only occur if the ISO-3166 file can be downloaded and cached,
+          cache timing follows -cd
+
     EXAMPLE
         `pwhois -o cidr,abuse-email 58.221.58.179`
             > cidr:58.208.0.0/12
@@ -287,8 +297,7 @@ EOH;
 		 */
 		protected function Lookup($Query) {
 			if(!($CacheFilepath = $this->FindCachedResults($Query))) {
-				if(pwhois::$VerbosityLevel >= 1)
-					echo "resolve: Resolving for query={$Query}".PHP_EOL;
+				self::Debug(1, "resolve: Resolving for query={$Query}");
 					
 				$tblResolved = $this->objResolver->Lookup($Query);
 				
@@ -301,11 +310,10 @@ EOH;
 				foreach($this->tblOutputOptions as $Field => $Description)
 					$tblResults[$Field] = pwhois_output_parsers::$Field($tblResolved);
 				
-				$this->RawResults = implode(PHP_EOL, $tblResolved['rawdata']).PHP_EOL;
+				$this->RawResults = $tblResolved['rawdata'];
 				return $tblResults;
 			}
-			if(pwhois::$VerbosityLevel >= 1)
-				echo "cache: Results read from cache file={$CacheFilepath}".PHP_EOL;
+			self::Debug(1, "cache: Results read from cache file={$CacheFilepath}");
 			
 			$CacheResults = file_get_contents($CacheFilepath);
 			$tblResults = array();
@@ -314,7 +322,7 @@ EOH;
 				$tblResults[$Key] = $Value;
 			}
 			if(is_readable($RawCacheFilepath = $CacheFilepath.'_raw'))
-				$this->RawResults = file_get_contents($RawCacheFilepath);
+				$this->RawResults = explode(PHP_EOL, file_get_contents($RawCacheFilepath));
 			else
 				fwrite(STDERR, "Warning, could not read raw cache results file={$RawCacheFilepath}".PHP_EOL);
 			
@@ -331,29 +339,28 @@ EOH;
 		* @return bool
 		*/
 		protected function CacheResults($tblResults, $Raw) {
-			if($this->CacheDir) {
+			if(self::$CacheDir) {
 				if(!preg_match(VALID_CIDR_PATTERN, $tblResults['cidr'])) {
 					fwrite(STDERR, "Warning, could not cache results.  Output parameter cidr not a valid format (cidr={$tblResults['cidr']})".PHP_EOL);
 					return false;
 				}
 
-				if(!is_writable($this->CacheDir)) {
-					fwrite(STDERR, "Warning, cache dir ({$this->CacheDir}) is not writable, could not cache results".PHP_EOL);
+				if(!is_writable(self::$CacheDir)) {
+					fwrite(STDERR, "Warning, cache dir (".self::$CacheDir.") is not writable, could not cache results".PHP_EOL);
 					return false;
 				}
 
 				/* If we read our results from cache, do not re-write to cache */
 				if(!$this->ResultsReadFromCache) {
-					$Filepath = $this->CacheDir.'/'.str_replace('/', '_', $tblResults['cidr']);
+					$Filepath = self::$CacheDir.'/'.str_replace('/', '_', $tblResults['cidr']);
 
 					$tLines = array();
 					foreach($this->tblOutputOptions as $Field => $Descrption)
 						$tLines[] = $Field.':'.$tblResults[$Field];
 					file_put_contents($Filepath, implode(PHP_EOL, $tLines).PHP_EOL);
-					file_put_contents($Filepath.'_raw', $Raw);
+					file_put_contents($Filepath.'_raw', implode(PHP_EOL, $Raw).PHP_EOL);
 
-					if(pwhois::$VerbosityLevel >= 1)
-						echo "cache: Results written to cache file={$Filepath}".PHP_EOL;
+					self::Debug(1, "cache: Results written to cache file={$Filepath}");
 				}
 			}
 			return true;
@@ -370,24 +377,22 @@ EOH;
 			if(!preg_match(VALID_IP_PATTERN, $Query))
 				return false;
 			
-			if($this->CacheDir && is_writable($this->CacheDir) && $this->CacheDays > 0) {
-				$ValidCacheTime = time() - ($this->CacheDays * 86400);
-				$CleanCacheTime = time() - ($this->CacheCleanupDays * 86400);
+			if(self::$CacheDir && is_writable(self::$CacheDir) && self::$CacheDays > 0) {
+				$ValidCacheTime = time() - (self::$CacheDays * 86400);
+				$CleanCacheTime = time() - (self::$CacheCleanupDays * 86400);
 				
-				if(pwhois::$VerbosityLevel >= 1)
-					echo "cache: Searching cache for {$Query}".PHP_EOL;
+				self::Debug(1, "cache: Searching cache for {$Query}");
 
 				/** @param $objFile DirectoryIterator */
-				foreach(new DirectoryIterator($this->CacheDir) as $objFile) {
+				foreach(new DirectoryIterator(self::$CacheDir) as $objFile) {
 					if($objFile->isFile()) {
 						$FileModifiedTime = $objFile->getMTime();
 						if($FileModifiedTime > $ValidCacheTime && preg_match('/^(\d+\.\d+\.\d+\.\d+)_(\d+)$/', $objFile->getFilename(), $tMatches)) {
 							if(pwhois_utils::MatchesCIDR($Query, $tMatches[1].'/'.$tMatches[2]))
 								return $objFile->getPathname();
 						}
-						if($this->CacheCleanupDays > 0 && $FileModifiedTime < $CleanCacheTime) {
-							if(pwhois::$VerbosityLevel >= 1)
-								echo "cache: Cache file expired, deleted file=".$objFile->getPathname().PHP_EOL;
+						if(self::$CacheCleanupDays > 0 && $FileModifiedTime < $CleanCacheTime) {
+							self::Debug(1, "cache: Cache file expired, deleted file=".$objFile->getPathname());
 							unlink($objFile->getPathname());
 						}
 					}
@@ -401,7 +406,8 @@ EOH;
 
 			foreach($this->tblQuery as $Query) {
 				$tblResults = $this->Lookup($Query);
-												
+
+
 				if($this->DumpRawResults)
 					echo implode(PHP_EOL, $this->RawResults);
 				
@@ -414,13 +420,63 @@ EOH;
 				}
 			}
 		}
+
+		/**
+		 * Sends the given $Message out if the Verbosity Level >= $Level, may also specify message as first parameter,
+		 *      in which case $Level is assumed to be 0 (always)
+		 *
+		 * @param mixed     $Level      The level at which $Message will be shown, level is determined by -v[vvvv]
+		 * @param string    $Message    The message to be shown
+		 */
+		public static function Debug($Level, $Message=NULL) {
+			if($Message === NULL) {
+				$Message = $Level;
+				$Level = 0;
+			}
+			if(self::$VerbosityLevel >= $Level)
+				echo $Message.PHP_EOL;
+		}
 	}
 	
 	/**
 	* Utility functions
 	*/
 	class pwhois_utils {
-		
+		static private $tblIso3661Conversions = NULL;
+
+		/**
+		 * Returns the ISO-3661 country name if a cache directory is available and $CountryCode is found
+		 *
+		 * @param string $CountryCode   The ISO-3661 country code to convert to a full name
+		 *
+		 * @return string   The full country name if file is available and match is found, otherwise input string
+		 */
+		static public function CountryCodeToCountryName($CountryCode) {
+			if(is_null(self::$tblIso3661Conversions)) {
+				if(!pwhois::$CacheDir)
+					return $CountryCode;
+				if(!is_readable($Iso3661Filepath = pwhois::$CacheDir.'/ISO-3661.txt') || time() > filemtime($Iso3661Filepath) + (pwhois::$CacheDays * 86400)) {
+					if(file_exists($Iso3661Filepath) && !is_writable($Iso3661Filepath)) {
+						pwhois::Debug(0, "Not able to write ISO-3661 file to cache file: ".$Iso3661Filepath);
+						return $CountryCode;
+					}
+					pwhois::Debug(2, "Downloading ISO-3661 from http://www.iso.org");
+					file_put_contents($Iso3661Filepath, file_get_contents('http://www.iso.org/iso/home/standards/country_codes/country_names_and_code_elements_txt.htm'));
+				}
+				if(!is_readable($Iso3661Filepath)) {
+					pwhois::Debug(0, "Not able to read ISO-3661 file from: ".$Iso3661Filepath);
+					return $CountryCode;
+				}
+				pwhois::Debug(2, "Reading ISO-3661 Data from: {$Iso3661Filepath}");
+				foreach(preg_split('|\r\n|', file_get_contents($Iso3661Filepath)) as $Line) {
+					list($Country, $Code) = explode(';', $Line, 2);
+					if(strlen($Code) == 2)
+						self::$tblIso3661Conversions[strtoupper($Code)] = ucwords(strtolower($Country));
+				}
+			}
+			return self::$tblIso3661Conversions[strtoupper($CountryCode)] ?: $CountryCode;
+		}
+
 		/** Returns true if the given ip address matches the given $CIDR 
 		* 
 		* @param string $IpAddress
@@ -514,25 +570,22 @@ EOH;
 				list($FullRangeText, $StartRangeText, $EndRangeText) = $tblMatches;
 				$StartRange = ip2long($StartRangeText);
 				$EndRange = ip2long($EndRangeText);
-				if(pwhois::$VerbosityLevel >= 2)
-					echo $FullRangeText.PHP_EOL;
+				pwhois::Debug(2, "Finding CIDR Mask for: {$FullRangeText}");
 				
 				for($Length=32;$Length>0;$Length--) {
 					$Mask = (pow(2, $Length)-1) << (32 - $Length);
 					
-					if(pwhois::$VerbosityLevel >= 2) {
-						printf("Length=%-2u | Start=%-10u | End=%-10u | Mask=%-10u | Start & Mask = %-10u | End & Mask = %-10u | Match = %-10u".PHP_EOL,
-							$Length, $StartRange, $EndRange, $Mask, 
-							$StartRange & $Mask, 
-							$EndRange & $Mask,
-							($StartRange & $Mask) == ($EndRange & $Mask));
-					}
-					if(pwhois::$VerbosityLevel >= 3) {
-						printf("   Start: %032b |  End: %032b".PHP_EOL, $StartRange, $EndRange);
-						printf("    Mask: %032b | Mask: %032b".PHP_EOL, $Mask, $Mask);
-						printf("          %032b |       %032b".PHP_EOL, $StartRange & $Mask, $EndRange & $Mask);
-						echo PHP_EOL;
-					}
+					pwhois::Debug(3, sprintf("    Length=%-2u | Start=%-10u | End=%-10u | Mask=%-10u | Start & Mask = %-10u | End & Mask = %-10u | Match = %-10u",
+												$Length, $StartRange, $EndRange, $Mask,
+												$StartRange & $Mask,
+												$EndRange & $Mask,
+												($StartRange & $Mask) == ($EndRange & $Mask)));
+
+					pwhois::Debug(4, sprintf("       Start: %032b |  End: %032b", $StartRange, $EndRange));
+					pwhois::Debug(4, sprintf("        Mask: %032b | Mask: %032b", $Mask, $Mask));
+					pwhois::Debug(4, sprintf("              %032b |       %032b", $StartRange & $Mask, $EndRange & $Mask));
+					pwhois::Debug(4, '');
+
 					if(($StartRange & $Mask) == ($EndRange & $Mask))
 						return $StartRangeText.'/'.$Length;
 				}
@@ -540,6 +593,9 @@ EOH;
 			return false;
 		}
 
+		const CAPTURE_FULL = 0;
+		const CAPTURE_FIRST = 1;
+		const CAPTURE_SECOND = 2;
 		/**
 		* Searches the given array of data for data matching the pattern, if pattern patches
 		* 	returns $1 if present or $0 otherwise
@@ -554,8 +610,12 @@ EOH;
 				if(is_array($Datum) && ($Result = self::SearchDataForPattern($Datum, $tblPatterns)))
 					return $Result;
 				foreach((array)$tblPatterns as $PatternSearch => $PatternCapture) {
-					if(preg_match($PatternSearch, $Datum) && preg_match($PatternCapture, $Datum, $tblMatches))
-						return $tblMatches[0];
+					if(preg_match($PatternSearch, $Datum, $tblMatches)) {
+						if(is_numeric($PatternCapture))
+							return $tblMatches[$PatternCapture];
+						if(preg_match($PatternCapture, $Datum, $tblMatches))
+							return $tblMatches[0];
+					}
 				}
 			}
 			return false;
@@ -582,28 +642,40 @@ EOH;
 		/** Retrieves the abuse contact email address */
 		static public function abuse_email($tblResolved) {
 			$tblPossibleInfo = array(
-				$tblResolved['rawdata'],
+				implode(PHP_EOL, $tblResolved['rawdata']),
 				$tblResolved['regrinfo']['tech']['remarks'],
 				$tblResolved['regrinfo']['tech']['email'],
 				$tblResolved['regrinfo']['admin']['remarks'],
 				$tblResolved['regrinfo']['admin']['email'],
 			);
 			$tblPreferredPatterns = array(
-				'/(anti-spam|antispam|spam)/' 	=> REGEX_EMAIL_PATTERN,
-				'/(abuse)/'						=> REGEX_EMAIL_PATTERN,
+				'/(anti-spam|antispam|spam)/i' 	=> REGEX_EMAIL_PATTERN,
+				'/(abuse)/i'					=> REGEX_EMAIL_PATTERN,
 			);
-			$EmailAddress = pwhois_utils::SearchDataForPattern($tblPossibleInfo, $tblPreferredPatterns)
+			return pwhois_utils::SearchDataForPattern($tblPossibleInfo, $tblPreferredPatterns)
 				?: $tblResolved['regrinfo']['tech']['email']
 				?: $tblResolved['regrinfo']['admin']['email']
 				?: 'unknown';
-			
-			return $EmailAddress;
 		}
-		
-		/** Retrieves the country */
+
+		/** Translates the country-code into the full country name by ISO-3661 standards */
 		static public function country($tblResolved) {
-			$tblOwnerAddress = $tblResolved['regrinfo']['owner']['address'];
-			return count($tblOwnerAddress) ? array_pop($tblOwnerAddress) : 'unknown';
+			return pwhois_utils::CountryCodeToCountryName(self::country_code($tblResolved));
+		}
+
+		/** Retrieves the country-code */
+		static public function country_code($tblResolved) {
+			if(($tblOwnerAddress = self::FindOwnerAddress($tblResolved, array('owner', 'tech', 'abuse', 'network'))) !== false)
+				return array_pop($tblOwnerAddress);
+
+			$tblPossibleInfo = array(
+				implode(PHP_EOL, $tblResolved['rawdata']),
+			);
+			$tblPreferredPatterns = array(
+				'/country:\s*(.+)/i'    => pwhois_utils::CAPTURE_FIRST,
+			);
+			return pwhois_utils::SearchDataForPattern($tblPossibleInfo, $tblPreferredPatterns)
+				?: 'unknown';
 		}
 
 		/**
@@ -620,6 +692,31 @@ EOH;
 			// This should never happen but is here to gracefully handle unexpected conditions
 			fwrite(STDERR, "Unknown output field: ".str_replace('_','-',$name).", ignored.".PHP_EOL);
 			return NULL;
+		}
+
+		/**
+		 * @param array $tblResolved    The resolved data structure from phpwhois lib
+		 * @param array $tblSegments    The ordered list of regrinfo segment to look for an address
+		 *
+		 * @return bool|array   Returns first address array found or false otherwise
+		 */
+		private static function FindOwnerAddress($tblResolved, $tblSegments) {
+			foreach($tblSegments as $Segment) {
+				if(is_array($tblOwnerAddress = $tblResolved['regrinfo'][$Segment]['address'])) {
+					pwhois::Debug(5, "FindOwnerAddress(): returning {$Segment}address");
+					return $tblOwnerAddress;
+				}
+
+				if($tblResolved['regrinfo'][$Segment][0]) {
+					foreach($tblResolved['regrinfo'][$Segment] as $Index => $tInfo) {
+						if(is_array($tInfo['address']) && count($tInfo['address'])) {
+							pwhois::Debug(5, "FindOwnerAddress(): returning {$Segment}[{$Index}] address");
+							return $tInfo['address'];
+						}
+					}
+				}
+			}
+			return false;
 		}
 	}
 

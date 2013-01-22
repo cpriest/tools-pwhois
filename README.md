@@ -4,7 +4,8 @@ tools-pwhois
 	Usage: pwhois [opts] query
 
 		pwhois utilizes the phpWhois project by Mark Jeftovic (http://www.phpwhois.org) and primarily
-			wraps that library in a cli which will give specific information from the query.
+			wraps that library in a cli which will give specific information from the query in a machine
+			parsable form and can also cache lookups for a period of time.
 
 		OPTIONS
 			-h          This usage information
