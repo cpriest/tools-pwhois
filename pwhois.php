@@ -27,10 +27,10 @@
 	 * 	- Increased -o options
 	 * 	- Normalized inetnum output format to x.x.x.x - x.x.x.x
 	 */
-	 
+
 	if(in_array('-d', $argv))
 		ini_set('display_errors', 'on');
-	
+
 	/** Locate phpWhois library */
 	$tblIncludeSearch = array(
 		__DIR__.'/../../code/lib/phpwhois',
@@ -52,33 +52,41 @@
 		echo PHP_EOL."You may also define an environment variable PHPWHOIS_LIB_DIR to specify it's location.".PHP_EOL;
 		exit(1);
 	}
-	
 
-	
+
+
 	define('REGEX_EMAIL_PATTERN', 	'/([\w\d\-\+\.]+)@((\[([0-9]{1,3}\.){3}[0-9]{1,3}\])|(([\w\-]+\.)+)([a-zA-Z]{2,4}))/');
 	define('VALID_CIDR_PATTERN',	'/\d+\.\d+\.\d+\.\d+\/\d+/');
 	define('VALID_IP_PATTERN',		'/\d+\.\d+\.\d+\.\d+/');
-	
+
 	/**
 	* Main execution class
 	*/
 	class pwhois {
-		
+
+		const F_NONE			= 0;
+		const F_TABULAR_OUTPUT 	= 1;
+		const F_BATCH_OUTPUT 	= 2;
+		const F_SHOW_PROGRESS	= 4;
+
+		/** @var int 		Flags affecting operation */
+		protected $Flags = self::F_NONE;
+
 		/** @var Whois		The whois.php resolver class */
 		protected $objResolver = NULL;
-		
+
 		/** @var array 	The query parameters */
 		protected $tblQuery;
-		
+
 		/** @var array	An array of possible output values */
 		protected $tblOutputOptions = array();
-		
+
 		/** @var array	Chosen output fields */
 		protected $tblOutputFields = array();
-		
+
 		/** @var int	If true, will dump the raw results object from phpWhois to stdout */
 		protected $DumpRawResultsObject = false;
-		
+
 		/** @var int	If true, will dump the raw results from whois to stdout */
 		protected $DumpRawResults = false;
 
@@ -87,7 +95,7 @@
 
 		/** @var string Contains the raw results of the query */
 		protected $RawResults = '';
-		
+
 		/** @var bool 	Set to true if the results have been read from cache (prevents re-writing to cache) */
 		protected $ResultsReadFromCache = false;
 
@@ -101,7 +109,7 @@
 		public static $CacheCleanupDays = 0;
 
 		/** @var string	Directory to cache responses in */
-		public static $CacheDir = NULL;
+		public static $CacheDir = '/var/cache/pwhois';
 
 		/**
 		* Parses and validates input parameters, then executes
@@ -109,10 +117,10 @@
 		public function __construct() {
 			global $argv;
 			array_shift($argv);	/* drop first argument - script location */
-			
+
 			if(count($argv) == 0)
 				$this->ExitHelp();
-			
+
 			for($j=0;$j<count($argv);$j++) {
 				$arg = $argv[$j];
 				$param = $argv[$j+1];
@@ -121,12 +129,12 @@
 					case '-h':
 						$this->ExitHelp();
 						break;
-						
+
 					case '-c':
 						$j++;
 						$this->SetCacheDir($param);
 						break;
-						
+
 					case '-cd':
 						$j++;
 						if(!is_numeric($param))
@@ -143,12 +151,24 @@
 							$this->ExitError("Invalid -cc parameter: {$param}, not numeric.");
 						self::$CacheCleanupDays = (int)$param;
 						break;
-						
+
 					case '-o':
 						$j++;
 						$this->tblOutputFields = array_unique(array_merge($this->tblOutputFields, explode(',', $param)));
 						break;
-					
+
+					case '-t':
+						$this->Flags |= self::F_TABULAR_OUTPUT;
+						break;
+
+					case '-b':
+						$this->Flags |= self::F_BATCH_OUTPUT;
+						break;
+
+					case '-p':
+						$this->Flags |= self::F_SHOW_PROGRESS;
+						break;
+
 					case '-d':		/* Checked for at very beginning */ 			break;
 					case '-dR':		$this->DumpRawResultsObject = true;				break;
 					case '-dr':		$this->DumpRawResults = true;					break;
@@ -160,7 +180,7 @@
 					case '-vvvv':
 						self::$VerbosityLevel = strlen($arg)-1;
 						break;
-						
+
 					default:
 						if($arg{0} == '-')
 							$this->ExitError("Unknown option {$arg}");
@@ -168,7 +188,14 @@
 						break;
 				}
 			}
-			
+
+			if(!($this->Flags & self::F_BATCH_OUTPUT) && count($this->tblQuery) > 1 && exec('which column 2>/dev/null', $tOutput, $ExitCode))
+				$this->Flags |= self::F_TABULAR_OUTPUT;
+
+
+			if($this->Flags & self::F_TABULAR_OUTPUT && $this->Flags & self::F_BATCH_OUTPUT)
+				$this->ExitError('-b and -t options cannot both be specified.');
+
 			$this->ValidateOutputOptions();
 			$this->Execute();
 		}
@@ -183,12 +210,12 @@
 				if(!is_writable($Directory))
 					$this->ExitError("Cannot write to {$Directory}/.test_file, check permissions.");
 			} else {
-				if(!@mkdir($Directory, 0775, true))
+				if(!@mkdir($Directory, 0777, true))
 					$this->ExitError("Cannot create cache directory \"{$Directory}\", check permissions.");
 			}
 			self::$CacheDir = $Directory;
 		}
-				
+
 		/**
 		 * Validates that the given -o parameters are available output options
 		 *
@@ -196,10 +223,10 @@
 		 */
 		protected function ValidateOutputOptions() {
 			$this->DetermineOutputOptions();
-			
+
 			if(count($this->tblOutputFields) == 0)
 				$this->tblOutputFields = array_keys($this->tblOutputOptions);
-			
+
 			$tblInvalid = array();
 			foreach($this->tblOutputFields as $Field) {
 				if(!array_key_exists($Field, $this->tblOutputOptions))
@@ -209,7 +236,7 @@
 				$this->ExitError("Unknown output field (-o): ".implode(', ', $tblInvalid));
 			return true;
 		}
-		
+
 		/**
 		 * Scans the pwhois_output_parsers class to get a list of valid output options
 		 *
@@ -218,7 +245,7 @@
 		protected function DetermineOutputOptions() {
 			if(count($this->tblOutputOptions) != 0)
 				return true;
-			
+
 			$objMirror = new ReflectionClass('pwhois_output_parsers');
 			foreach($objMirror->getMethods() as $objMethod) {
 				if($objMethod->isPublic() && $objMethod->getDocComment() && $objMethod->name != '__callStatic')
@@ -226,7 +253,7 @@
 			}
 			return true;
 		}
-		
+
 		/*
 		* Outputs usage information
 		*/
@@ -243,15 +270,20 @@ Usage: pwhois [opts] query
 
     pwhois utilizes the phpWhois project by Mark Jeftovic (http://www.phpwhois.org) and primarily
         wraps that library in a cli which will give specific information from the query.
-        
+
     OPTIONS
         -h          This usage information
-        -c   dir    Caches results in the given directory for the cache timeframe
+        -c   dir    Caches results in the given directory for the cache timeframe, default: /var/cache/pwhois
         -cd  days   The number of days to cache results for (will not re-lookup), default: 14 days
         -cc  days   The number of days to keep cache results for.  Defaults to -cd * 10, ignored if <= 0
-        
+
         -o          Comma separated list of fields to retrieve, defaults to all unless specified, possible values:
 {$OutputClasses}
+
+		-p			Show progress of lookups
+		-t			Output data in tabular format; separated by tabs.  If the linux column command is available, it will be used to pretty print the tabular data
+					This defaults to true if there is more than one query and the column command is available
+		-b			Output data in batch format, suitable for parsing
 
         -d          Sets php directive display_errors to on
         -dR         Dumps the raw phpWhois result object for each query to stdout
@@ -268,10 +300,10 @@ Usage: pwhois [opts] query
 
 EOH;
 		}
-		
+
 		/**
 		* Emits the given error to stderr and then exits 1 with usage information
-		* 
+		*
 		* @param string $Message
 		*/
 		protected function ExitError($Message) {
@@ -279,7 +311,7 @@ EOH;
 			$this->Help();
 			exit(1);
 		}
-		
+
 		/**
 		* Emits usage information and exits 0
 		*/
@@ -298,9 +330,9 @@ EOH;
 		protected function Lookup($Query) {
 			if(!($CacheFilepath = $this->FindCachedResults($Query))) {
 				self::Debug(1, "resolve: Resolving for query={$Query}");
-					
+
 				$tblResolved = $this->objResolver->Lookup($Query);
-				
+
 				$tblResolved = pwhois_utils::ExtrapolateData($tblResolved);
 
 				if($this->DumpRawResultsObject)
@@ -309,12 +341,12 @@ EOH;
 				$tblResults = array();
 				foreach($this->tblOutputOptions as $Field => $Description)
 					$tblResults[$Field] = pwhois_output_parsers::$Field($tblResolved);
-				
+
 				$this->RawResults = $tblResolved['rawdata'];
 				return $tblResults;
 			}
 			self::Debug(1, "cache: Results read from cache file={$CacheFilepath}");
-			
+
 			$CacheResults = file_get_contents($CacheFilepath);
 			$tblResults = array();
 			foreach(preg_split('/[\r\n]+/', $CacheResults) as $Line) {
@@ -325,15 +357,15 @@ EOH;
 				$this->RawResults = explode(PHP_EOL, file_get_contents($RawCacheFilepath));
 			else
 				fwrite(STDERR, "Warning, could not read raw cache results file={$RawCacheFilepath}".PHP_EOL);
-			
+
 			$this->ResultsReadFromCache = true;
-			
+
 			return $tblResults;
 		}
-		
+
 		/**
 		* Caches the results to the cache directory
-		* 
+		*
 		* @param array 	$tblResults		The parsed results of all -o options
 		* @param string $Raw			The raw results of the whois query
 		* @return bool
@@ -376,15 +408,16 @@ EOH;
 		protected function FindCachedResults($Query) {
 			if(!preg_match(VALID_IP_PATTERN, $Query))
 				return false;
-			
+
 			if(self::$CacheDir && is_writable(self::$CacheDir) && self::$CacheDays > 0) {
 				$ValidCacheTime = time() - (self::$CacheDays * 86400);
 				$CleanCacheTime = time() - (self::$CacheCleanupDays * 86400);
-				
+
 				self::Debug(1, "cache: Searching cache for {$Query}");
 
 				/** @param $objFile DirectoryIterator */
 				foreach(new DirectoryIterator(self::$CacheDir) as $objFile) {
+					/** @var $objFile DirectoryIterator */
 					if($objFile->isFile()) {
 						$FileModifiedTime = $objFile->getMTime();
 						if($FileModifiedTime > $ValidCacheTime && preg_match('/^(\d+\.\d+\.\d+\.\d+)_(\d+)$/', $objFile->getFilename(), $tMatches)) {
@@ -400,27 +433,71 @@ EOH;
 			}
 			return false;
 		}
-		
+
 		protected function Execute() {
 			$this->objResolver = new Whois();
 
-			foreach($this->tblQuery as $Query) {
+			$tblAllResults = [ ];
+			$TotalQueries = count($this->tblQuery);
+			$FL = strlen($TotalQueries);
+			foreach($this->tblQuery as $Index => $Query) {
+				if($this->Flags & self::F_SHOW_PROGRESS)
+					printf("\r%100s\r%0{$FL}s/%0{$FL}s Looking up %s", '', $Index+1, $TotalQueries, $Query);
 				$tblResults = $this->Lookup($Query);
-
 
 				if($this->DumpRawResults)
 					echo implode(PHP_EOL, $this->RawResults);
-				
+
 				$this->CacheResults($tblResults, $this->RawResults);
-					
-				foreach($this->tblOutputFields as $Field) {
-					if(count($this->tblQuery) > 1)
-						echo $Query.'=';
-					echo "{$Field}:{$tblResults[$Field]}".PHP_EOL;
-				}
+
+				$tblAllResults[$Query] = $tblResults;
 			}
+			if($this->Flags & self::F_SHOW_PROGRESS)
+				echo "\r";
+
+			echo str_repeat(' ', 100)."\r";
+
+			if($this->Flags & self::F_TABULAR_OUTPUT)
+				$this->OutputTabular($tblAllResults);
+			else
+				$this->OutputNormal($tblAllResults);
 		}
 
+		/**
+		 * @param array[] $tblAllResults	All results indexed by Query
+		 */
+		public function OutputNormal($tblAllResults) {
+			$tLines = [ ];
+			foreach($tblAllResults as $Query => $tblResults) {
+				foreach($this->tblOutputFields as $Field) {
+					$Line = '';
+					if(count($this->tblQuery) > 1)
+						$Line .= "{$Query}=";
+					$Line .= "{$Field}:{$tblResults[$Field]}";
+					$tLines[] = $Line;
+				}
+			}
+			echo implode(PHP_EOL, $tLines).PHP_EOL;
+		}
+
+		/**
+		 * @param array[] $tblAllResults	All results indexed by Query
+		 */
+		public function OutputTabular($tblAllResults) {
+			$tLines = [ ];
+			$tLines[] = "query\t".implode("\t", $this->tblOutputFields);
+			$tblOutputFieldsAsKeys = array_flip($this->tblOutputFields);
+
+			foreach($tblAllResults as $Query => $tblResults)
+				$tLines[] = $Query."\t".implode("\t", array_values(array_intersect_key($tblResults, $tblOutputFieldsAsKeys)));
+
+			$ColumnCmd = exec('/usr/bin/which column', $tOutput, $ExitCode);
+			$Output = implode(PHP_EOL, $tLines).PHP_EOL;
+			if($ExitCode == 0)
+				passthru("echo '{$Output}' | {$ColumnCmd} -t -s '	'");
+			else
+				echo $Output;
+		}
 		/**
 		 * Sends the given $Message out if the Verbosity Level >= $Level, may also specify message as first parameter,
 		 *      in which case $Level is assumed to be 0 (always)
@@ -437,11 +514,12 @@ EOH;
 				echo $Message.PHP_EOL;
 		}
 	}
-	
+
 	/**
 	* Utility functions
 	*/
 	class pwhois_utils {
+		/** @var string[]	An array of country names, indexed by two letter UPPER CASE country code  */
 		static private $tblIso3661Conversions = NULL;
 
 		/**
@@ -477,8 +555,8 @@ EOH;
 			return self::$tblIso3661Conversions[strtoupper($CountryCode)] ?: $CountryCode;
 		}
 
-		/** Returns true if the given ip address matches the given $CIDR 
-		* 
+		/** Returns true if the given ip address matches the given $CIDR
+		*
 		* @param string $IpAddress
 		* @param string $CIDR
 		* @return bool
@@ -494,10 +572,10 @@ EOH;
 			}
 			return false;
 		}
-		
+
 		/**
 		* Extrapolates information from the resolved results and returns the extended resolve array
-		* 
+		*
 		* @param array $tblResolved
 		* @return array
 		*/
@@ -505,10 +583,10 @@ EOH;
 			$tblResolved['regrinfo']['network'] = self::ExtrapolateCIDR($tblResolved['regrinfo']['network']);
 			return $tblResolved;
 		}
-		
+
 		/**
 		* Calculates the CIDR for the network(s)
-		* 
+		*
 		* @param array $tblNetworks
 		* @return array
 		*/
@@ -525,21 +603,21 @@ EOH;
 			}
 			return $tblNetworks;
 		}
-		
+
 		/**
 		* Returns the tightest network by CIDR length and returns that network array
-		* 
+		*
 		* @param array $tblNetworks
 		* @return array
 		*/
 		static public function FindTightestNetwork($tblNetworks) {
 			if($tblNetworks['inetnum'])
 				return $tblNetworks;
-			
+
 			/* Find tightest CIDR */
 			$tblTightestNetwork = NULL;
 			$TightestNetworkLength = 0;
-			
+
 			foreach($tblNetworks as $tblNetwork) {
 				if(preg_match('/\d+\.\d+\.\d+\.\d+\/(\d+)/', $tblNetwork['cidr'], $tblMatches)) {
 					if(is_null($tblTightestNetwork) || $tblMatches[1] > $TightestNetworkLength) {
@@ -550,12 +628,12 @@ EOH;
 			}
 			return $tblTightestNetwork;
 		}
-		
+
 		/**
 		* Calculates the CIDR for the given x.x.x.x - x.x.x.x range
-		* 
+		*
 		* @param string $NetInetNum
-		* 
+		*
 		* @return string|bool
 		*/
 		static public function CalculateCIDR($NetInetNum) {
@@ -571,10 +649,10 @@ EOH;
 				$StartRange = ip2long($StartRangeText);
 				$EndRange = ip2long($EndRangeText);
 				pwhois::Debug(2, "Finding CIDR Mask for: {$FullRangeText}");
-				
+
 				for($Length=32;$Length>0;$Length--) {
 					$Mask = (pow(2, $Length)-1) << (32 - $Length);
-					
+
 					pwhois::Debug(3, sprintf("    Length=%-2u | Start=%-10u | End=%-10u | Mask=%-10u | Start & Mask = %-10u | End & Mask = %-10u | Match = %-10u",
 												$Length, $StartRange, $EndRange, $Mask,
 												$StartRange & $Mask,
@@ -599,10 +677,10 @@ EOH;
 		/**
 		* Searches the given array of data for data matching the pattern, if pattern patches
 		* 	returns $1 if present or $0 otherwise
-		* 
+		*
 		* @param array[string|array[]] 	$tblPossibleInfo	An array of information to search through
 		* @param array					$tblPatterns		An array of $PatternSearch => $PatternCapture pairs
-		* 
+		*
 		* @return string|bool
 		*/
 		static public function SearchDataForPattern($tblPossibleInfo, $tblPatterns) {
@@ -621,24 +699,24 @@ EOH;
 			return false;
 		}
 	}
-	
+
 	/**
 	* Output parsers
 	*/
 	class pwhois_output_parsers {
-		
+
 		/** Retrieves the network range responsible */
 		static public function inetnum($tblResolved) {
 			$tblTightestNetwork = pwhois_utils::FindTightestNetwork($tblResolved['regrinfo']['network']);
 			return $tblTightestNetwork['inetnum'] ?: 'Unknown';
 		}
-		
+
 		/** Retrieves the CIDR registered range responsible */
 		static public function cidr($tblResolved) {
 			$tblTightestNetwork = pwhois_utils::FindTightestNetwork($tblResolved['regrinfo']['network']);
 			return $tblTightestNetwork['cidr'] ?: 'Unknown';
 		}
-		
+
 		/** Retrieves the abuse contact email address */
 		static public function abuse_email($tblResolved) {
 			$tblPossibleInfo = array(
