@@ -64,10 +64,10 @@
 	*/
 	class pwhois {
 
-		const F_NONE			= 0;
-		const F_TABULAR_OUTPUT 	= 1;
-		const F_BATCH_OUTPUT 	= 2;
-		const F_SHOW_PROGRESS	= 4;
+		const F_NONE					= 0;
+		const F_TABULAR_OUTPUT 			= 1;
+		const F_BATCH_OUTPUT 			= 2;
+		const F_SHOW_PROGRESS			= 4;
 
 		/** @var int 		Flags affecting operation */
 		protected $Flags = self::F_NONE;
@@ -155,6 +155,16 @@
 					case '-o':
 						$j++;
 						$this->tblOutputFields = array_unique(array_merge($this->tblOutputFields, explode(',', $param)));
+						break;
+
+					/** @noinspection PhpMissingBreakStatementInspection */
+					case '-f':
+						$j++;
+						$this->InputFile = $param;
+						if(!file_exists($this->InputFile))
+							$this->ExitError("{$this->InputFile} does not exist.");
+						if(!is_readable($this->InputFile))
+							$this->ExitError("{$this->InputFile} is not readable (exists but cannot read -- permissions??).");
 						break;
 
 					case '-t':
@@ -267,7 +277,7 @@
 			$OutputClasses = implode(PHP_EOL, $tblOutputClasses);
 
 			echo <<<EOH
-Usage: pwhois [opts] query
+Usage: pwhois [opts] {query | -f <file>}
 
     pwhois utilizes the phpWhois project by Mark Jeftovic (http://www.phpwhois.org) and primarily
         wraps that library in a cli which will give specific information from the query.
@@ -277,6 +287,9 @@ Usage: pwhois [opts] query
         -c   dir    Caches results in the given directory for the cache timeframe, default: /var/cache/pwhois
         -cd  days   The number of days to cache results for (will not re-lookup), default: 14 days
         -cc  days   The number of days to keep cache results for.  Defaults to -cd * 10, ignored if <= 0
+
+        -f   <file> Reads lines from the file and runs the query on the first ip address on each line and outputs
+                    the input line with the query results appended
 
         -o          Comma separated list of fields to retrieve, defaults to all unless specified, possible values:
 {$OutputClasses}
@@ -344,6 +357,8 @@ EOH;
 					$tblResults[$Field] = pwhois_output_parsers::$Field($tblResolved);
 
 				$this->RawResults = $tblResolved['rawdata'];
+				$this->CacheResults($tblResults, $this->RawResults);
+
 				return $tblResults;
 			}
 			self::Debug(1, "cache: Results read from cache file={$CacheFilepath}");
@@ -358,8 +373,6 @@ EOH;
 				$this->RawResults = explode(PHP_EOL, file_get_contents($RawCacheFilepath));
 			else
 				fwrite(STDERR, "Warning, could not read raw cache results file={$RawCacheFilepath}".PHP_EOL);
-
-			$this->ResultsReadFromCache = true;
 
 			return $tblResults;
 		}
@@ -384,17 +397,15 @@ EOH;
 				}
 
 				/* If we read our results from cache, do not re-write to cache */
-				if(!$this->ResultsReadFromCache) {
-					$Filepath = self::$CacheDir.'/'.str_replace('/', '_', $tblResults['cidr']);
+				$Filepath = self::$CacheDir.'/'.str_replace('/', '_', $tblResults['cidr']);
 
-					$tLines = [];
-					foreach($this->tblOutputOptions as $Field => $Description)
-						$tLines[] = $Field.':'.$tblResults[$Field];
-					file_put_contents($Filepath, implode(PHP_EOL, $tLines).PHP_EOL);
-					file_put_contents($Filepath.'_raw', implode(PHP_EOL, $Raw).PHP_EOL);
+				$tLines = [];
+				foreach($this->tblOutputOptions as $Field => $Description)
+					$tLines[] = $Field.':'.$tblResults[$Field];
+				file_put_contents($Filepath, implode(PHP_EOL, $tLines).PHP_EOL);
+				file_put_contents($Filepath.'_raw', implode(PHP_EOL, $Raw).PHP_EOL);
 
-					self::Debug(1, "cache: Results written to cache file={$Filepath}");
-				}
+				self::Debug(1, "cache: Results written to cache file={$Filepath}");
 			}
 			return true;
 		}
@@ -435,9 +446,16 @@ EOH;
 			return false;
 		}
 
+		/**
+		 * @return null|void
+		 */
 		protected function Execute() {
 			$this->objResolver = new Whois();
 
+			if($this->InputFile) {
+				$this->ExecuteForFile();
+				return;
+			}
 			$tblAllResults = [ ];
 			$TotalQueries = count($this->tblQuery);
 			$FL = strlen($TotalQueries);
@@ -448,8 +466,6 @@ EOH;
 
 				if($this->DumpRawResults)
 					echo implode(PHP_EOL, $this->RawResults);
-
-				$this->CacheResults($tblResults, $this->RawResults);
 
 				$tblAllResults[$Query] = $tblResults;
 			}
@@ -462,6 +478,33 @@ EOH;
 				$this->OutputTabular($tblAllResults);
 			else
 				$this->OutputNormal($tblAllResults);
+			return;
+		}
+
+		protected function ExecuteForFile() {
+			$SeparationChar = NULL;
+			$objFile = new SplFileObject($this->InputFile);
+			$objFile->setFlags(SplFileObject::DROP_NEW_LINE | SplFileObject::SKIP_EMPTY | SplFileObject::READ_AHEAD);
+			$tblOutputFields = array_flip($this->tblOutputFields);
+			foreach($objFile as $Index => $Line) {
+				if($Index == 0) {
+					$tChars = array_intersect_key(count_chars($Line), array_flip([ord("\t"),ord(" "),ord(",")]));
+					arsort($tChars, SORT_NATURAL);
+					$SeparationChar = chr(array_keys($tChars)[0]);
+				}
+				if(preg_match('#\d+\.\d+\.\d+\.\d+#', $Line, $tMatches)) {
+					$tblResults = $this->Lookup($tMatches[0]);
+
+					echo $Line.$SeparationChar;
+					$tblSelectedResults = array_intersect_key($tblResults, $tblOutputFields);
+					$tOutput = [ ];
+					foreach($tblSelectedResults as $Key => $Value)
+						$tOutput[] = $Key.'='.$Value;
+					echo implode(',', $tOutput).PHP_EOL;
+				} else {
+					echo implode($SeparationChar, [$Line, "Could not locate an ip address to query against"]);
+				}
+			}
 		}
 
 		/**
