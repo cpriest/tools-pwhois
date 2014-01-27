@@ -32,11 +32,11 @@
 		ini_set('display_errors', 'on');
 
 	/** Locate phpWhois library */
-	$tblIncludeSearch = array(
+	$tblIncludeSearch = [
 		__DIR__.'/../../code/lib/phpwhois',
 		__DIR__,
 		getenv('PHPWHOIS_LIB_DIR'),
-	);
+	];
 	foreach($tblIncludeSearch as $Directory) {
 		if($Directory && file_exists($IncludeFilepath = $Directory.'/whois.main.php')) {
 			include($IncludeFilepath);
@@ -79,10 +79,10 @@
 		protected $tblQuery;
 
 		/** @var array	An array of possible output values */
-		protected $tblOutputOptions = array();
+		protected $tblOutputOptions = [];
 
 		/** @var array	Chosen output fields */
-		protected $tblOutputFields = array();
+		protected $tblOutputFields = [];
 
 		/** @var int	If true, will dump the raw results object from phpWhois to stdout */
 		protected $DumpRawResultsObject = false;
@@ -197,6 +197,7 @@
 				$this->ExitError('-b and -t options cannot both be specified.');
 
 			$this->ValidateOutputOptions();
+			$this->SetCacheDir(self::$CacheDir);
 			$this->Execute();
 		}
 
@@ -227,7 +228,7 @@
 			if(count($this->tblOutputFields) == 0)
 				$this->tblOutputFields = array_keys($this->tblOutputOptions);
 
-			$tblInvalid = array();
+			$tblInvalid = [];
 			foreach($this->tblOutputFields as $Field) {
 				if(!array_key_exists($Field, $this->tblOutputOptions))
 					$tblInvalid[] = $Field;
@@ -249,7 +250,7 @@
 			$objMirror = new ReflectionClass('pwhois_output_parsers');
 			foreach($objMirror->getMethods() as $objMethod) {
 				if($objMethod->isPublic() && $objMethod->getDocComment() && $objMethod->name != '__callStatic')
-					$this->tblOutputOptions[str_replace('_','-', $objMethod->name)] = str_replace(array('/**','*/'),'', $objMethod->getDocComment());
+					$this->tblOutputOptions[str_replace('_','-', $objMethod->name)] = str_replace(['/**','*/'],'', $objMethod->getDocComment());
 			}
 			return true;
 		}
@@ -260,7 +261,7 @@
 		protected function Help() {
 			$this->DetermineOutputOptions();
 
-			$tblOutputClasses = array();
+			$tblOutputClasses = [];
 			foreach($this->tblOutputOptions as $Option => $Desc)
 				$tblOutputClasses[] = sprintf("                       %-15.15s %s", $Option, $Desc);
 			$OutputClasses = implode(PHP_EOL, $tblOutputClasses);
@@ -338,7 +339,7 @@ EOH;
 				if($this->DumpRawResultsObject)
 					print_r($tblResolved);
 
-				$tblResults = array();
+				$tblResults = [];
 				foreach($this->tblOutputOptions as $Field => $Description)
 					$tblResults[$Field] = pwhois_output_parsers::$Field($tblResolved);
 
@@ -348,7 +349,7 @@ EOH;
 			self::Debug(1, "cache: Results read from cache file={$CacheFilepath}");
 
 			$CacheResults = file_get_contents($CacheFilepath);
-			$tblResults = array();
+			$tblResults = [];
 			foreach(preg_split('/[\r\n]+/', $CacheResults) as $Line) {
 				list($Key, $Value) = explode(':', $Line, 2);
 				$tblResults[$Key] = $Value;
@@ -386,8 +387,8 @@ EOH;
 				if(!$this->ResultsReadFromCache) {
 					$Filepath = self::$CacheDir.'/'.str_replace('/', '_', $tblResults['cidr']);
 
-					$tLines = array();
-					foreach($this->tblOutputOptions as $Field => $Descrption)
+					$tLines = [];
+					foreach($this->tblOutputOptions as $Field => $Description)
 						$tLines[] = $Field.':'.$tblResults[$Field];
 					file_put_contents($Filepath, implode(PHP_EOL, $tLines).PHP_EOL);
 					file_put_contents($Filepath.'_raw', implode(PHP_EOL, $Raw).PHP_EOL);
@@ -719,17 +720,17 @@ EOH;
 
 		/** Retrieves the abuse contact email address */
 		static public function abuse_email($tblResolved) {
-			$tblPossibleInfo = array(
+			$tblPossibleInfo = [
 				implode(PHP_EOL, $tblResolved['rawdata']),
 				$tblResolved['regrinfo']['tech']['remarks'],
 				$tblResolved['regrinfo']['tech']['email'],
 				$tblResolved['regrinfo']['admin']['remarks'],
 				$tblResolved['regrinfo']['admin']['email'],
-			);
-			$tblPreferredPatterns = array(
+			];
+			$tblPreferredPatterns = [
 				'/(anti-spam|antispam|spam)/i' 	=> REGEX_EMAIL_PATTERN,
 				'/(abuse)/i'					=> REGEX_EMAIL_PATTERN,
-			);
+			];
 			return pwhois_utils::SearchDataForPattern($tblPossibleInfo, $tblPreferredPatterns)
 				?: $tblResolved['regrinfo']['tech']['email']
 				?: $tblResolved['regrinfo']['admin']['email']
@@ -743,15 +744,15 @@ EOH;
 
 		/** Retrieves the country-code */
 		static public function country_code($tblResolved) {
-			if(($tblOwnerAddress = self::FindOwnerAddress($tblResolved, array('owner', 'tech', 'abuse', 'network'))) !== false)
+			if(($tblOwnerAddress = self::FindOwnerAddress($tblResolved, ['owner', 'tech', 'abuse', 'network'])) !== false)
 				return array_pop($tblOwnerAddress);
 
-			$tblPossibleInfo = array(
+			$tblPossibleInfo = [
 				implode(PHP_EOL, $tblResolved['rawdata']),
-			);
-			$tblPreferredPatterns = array(
+			];
+			$tblPreferredPatterns = [
 				'/country:\s*(.+)/i'    => pwhois_utils::CAPTURE_FIRST,
-			);
+			];
 			return pwhois_utils::SearchDataForPattern($tblPossibleInfo, $tblPreferredPatterns)
 				?: 'unknown';
 		}
@@ -764,7 +765,7 @@ EOH;
 		 */
 		static public function __callStatic($name, $arguments) {
 			$CallableName = str_replace('-','_', $name);
-			if(is_callable(array('pwhois_output_parsers', $CallableName)))
+			if(is_callable(['pwhois_output_parsers', $CallableName]))
 				return self::$CallableName($arguments[0]);
 
 			// This should never happen but is here to gracefully handle unexpected conditions
